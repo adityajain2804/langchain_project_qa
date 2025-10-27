@@ -1,0 +1,7 @@
+langchain==0.3.3
+langchain-community==0.3.2
+langchain-core==0.3.10
+pypdf
+faiss-cpu
+python-dotenv
+transformers
