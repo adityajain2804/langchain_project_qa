@@ -1,5 +1,7 @@
 # main.py
 import warnings
+import os
+import subprocess
 
 # Suppress a known LangChain/Pydantic compatibility user warning on Python 3.14+
 # This is safe to suppress locally; consider updating langchain_core or Python version later.
@@ -7,7 +9,7 @@ warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't 
 
 from pdf_loader import load_pdf
 from embedding_creator import create_embeddings
-from qa_chain import create_qa_chain
+from qa_chain import create_qa_chain, LLM_MODEL_NAME, OLLAMA_API_BASE_URL
 
 
 def main():
@@ -15,7 +17,29 @@ def main():
     docs = load_pdf(pdf_path)
     
     vector_store = create_embeddings(docs)
-    qa, retriever, llm = create_qa_chain(vector_store)
+    qa, _retriever, llm = create_qa_chain(vector_store)
+
+    # Print and verify Ollama HTTP API base URL and that the model is available locally.
+    print(f"[INFO] Using Ollama HTTP API base URL: {OLLAMA_API_BASE_URL}")
+    # Check HTTP reachability (best-effort). Use requests if available.
+    try:
+        import requests
+        r = requests.get(OLLAMA_API_BASE_URL, timeout=3)
+        print(f"[INFO] Ollama HTTP endpoint reachable (status {r.status_code})")
+    except Exception as e:
+        print(f"[WARN] Could not reach Ollama HTTP endpoint at {OLLAMA_API_BASE_URL}: {e}")
+
+    # Check that the model is present in `ollama list` (best-effort). If `ollama` CLI isn't available
+    # this will warn but not stop execution.
+    try:
+        res = subprocess.run(["ollama", "list"], capture_output=True, text=True, check=False)
+        out = (res.stdout or "") + (res.stderr or "")
+        if LLM_MODEL_NAME in out:
+            print(f"[INFO] Ollama model '{LLM_MODEL_NAME}' found locally.")
+        else:
+            print(f"[WARN] Ollama model '{LLM_MODEL_NAME}' not found in `ollama list` output. Run `ollama pull {LLM_MODEL_NAME}` if needed.")
+    except Exception as e:
+        print(f"[WARN] Could not run `ollama list` to verify models: {e}")
     
     print("\n[READY] Ask your question related to PDF content (type 'exit' to quit):")
     while True:
