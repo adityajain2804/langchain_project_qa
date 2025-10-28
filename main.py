@@ -6,18 +6,50 @@ import subprocess
 # Suppress a known LangChain/Pydantic compatibility user warning on Python 3.14+
 # This is safe to suppress locally; consider updating langchain_core or Python version later.
 warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.*")
+# Suppress the transformers/langchain framework advisory which prints when PyTorch/TF/Flax are missing.
+warnings.filterwarnings("ignore", message="None of PyTorch, TensorFlow >= 2.0, or Flax have been found.*")
 
-from pdf_loader import load_pdf
-from embedding_creator import create_embeddings
-from qa_chain import create_qa_chain, LLM_MODEL_NAME, OLLAMA_API_BASE_URL
+from contextlib import redirect_stdout, redirect_stderr
+
+# Some imported libraries print advisory/info messages during import (for example
+# transformers/langchain may print framework availability). Silence stdout/stderr
+# temporarily during imports so the terminal stays clean.
+with open(os.devnull, 'w') as _devnull:
+    with redirect_stdout(_devnull), redirect_stderr(_devnull):
+        from pdf_loader import load_pdf
+        from embedding_creator import create_embeddings
+        from qa_chain import create_qa_chain, LLM_MODEL_NAME, OLLAMA_API_BASE_URL
 
 
 def main():
-    pdf_path = input("Enter path of your PDF file: ")
-    docs = load_pdf(pdf_path)
+    # Cache frequently used functions
+    path_exists = os.path.exists
+    path_expanduser = os.path.expanduser
     
-    vector_store = create_embeddings(docs)
-    qa, _retriever, llm = create_qa_chain(vector_store)
+    # If we have a saved FAISS metadata file, use the stored PDF path and load the index
+    meta_file = "faiss.db"
+    pdf_path = None
+    
+    if path_exists(meta_file):
+        try:
+            import json  # Import here for faster startup when not needed
+            with open(meta_file, "r") as f:
+                meta = json.loads(f.read())
+            stored = meta.get("source_path")
+            if stored and path_exists(stored):
+                pdf_path = stored
+                print(f"[INFO] Using cached PDF: {pdf_path}")
+        except Exception as e:
+            print(f"[WARN] Could not load cached PDF path: {e}")
+
+    while not pdf_path or not path_exists(path_expanduser(pdf_path)):
+        pdf_path = input("Enter path of your PDF file: ").strip('" \'')
+
+    docs = load_pdf(pdf_path)
+
+    # Pass source_path so embedding_creator will save it in metadata when building index
+    vector_store = create_embeddings(docs, source_path=pdf_path)
+    qa_chain, _, _ = create_qa_chain(vector_store)
 
     # Print and verify Ollama HTTP API base URL and that the model is available locally.
     print(f"[INFO] Using Ollama HTTP API base URL: {OLLAMA_API_BASE_URL}")
@@ -41,51 +73,54 @@ def main():
     except Exception as e:
         print(f"[WARN] Could not run `ollama list` to verify models: {e}")
     
-    print("\n[READY] Ask your question related to PDF content (type 'exit' to quit):")
+    print("\n[READY] Ask questions about the PDF content (type 'exit' to quit, 'help' for tips):")
+    
+    help_text = """
+Tips for better answers:
+- Be specific in your questions
+- Ask about one topic at a time
+- For definitions, include 'what is' or 'define'
+- For processes, ask 'how to' or 'steps for'
+- Type 'exit' to quit
+"""
+    
     while True:
-        query = input("\nQuestion: ")
-        if query.strip().lower() == "exit":
+        query = input("\nQuestion: ").strip()
+        query_lower = query.lower()
+        
+        if query_lower == "exit":
+            print("\nThank you for using the PDF QA system!")
             break
+        if query_lower == "help":
+            print(help_text)
+            continue
+        if not query:
+            continue
+            
         try:
-            # Fetch top retrieved documents (no debug prints) so we can build context
-            docs_for_query = vector_store.similarity_search(query, k=4)
-
-            # Construct a prompt explicitly using the retrieved context and call the LLM directly.
-            context_text = "\n\n".join([d.page_content for d in docs_for_query])
-            prompt = (
-                "You are an assistant that answers questions using ONLY the provided context. "
-                "If the answer is not contained in the context, reply with 'I don't know.'\n\n"
-                f"Context:\n{context_text}\n\nQuestion: {query}\nAnswer concisely:")
-
-            # Try calling the underlying LLM directly. If that fails, fall back to qa.invoke.
-            try:
-                llm_result = llm.invoke({"input": prompt})
-                if isinstance(llm_result, dict):
-                    answer = llm_result.get("output_text") or llm_result.get("answer") or next(iter(llm_result.values()), "")
-                else:
-                    answer = llm_result
-            except Exception:
-                # Fallback: use the QA chain invocation
-                result = qa.invoke({"query": query})
-                if isinstance(result, dict):
-                    answer = result.get("output_text") or result.get("answer") or next(iter(result.values()), "")
-                else:
-                    answer = result
-
-            # If the model simply echoed the question or returned empty, use the top retrieved doc as the answer.
-            if not answer or answer.strip().lower() == query.strip().lower():
-                if docs_for_query:
-                    # Provide a concise excerpt from the top document as the answer
-                    answer = docs_for_query[0].page_content.strip()
-                    # Truncate to a reasonable length
-                    if len(answer) > 1500:
-                        answer = answer[:1500].rsplit(" ", 1)[0] + "..."
-                else:
-                    answer = "I don't know."
-
-            print(f"\nAnswer: {answer}\n")
+            # Use the LCEL chain to get answer with timeout protection
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError
+            with ThreadPoolExecutor() as executor:
+                future = executor.submit(qa_chain.invoke, query)
+                try:
+                    answer = future.result(timeout=30)  # 30 second timeout
+                except TimeoutError:
+                    print("\n[ERROR] Question took too long to answer. Try asking a more specific question.\n")
+                    continue
+            
+            # Clean up and format the answer
+            answer = answer.strip()
+            if not answer or answer.lower() == query_lower:
+                print("\nAnswer: I don't know or couldn't find relevant information in the PDF.\n")
+            else:
+                # Truncate very long answers while preserving complete sentences
+                if len(answer) > 1500:
+                    answer = answer[:1500].rsplit(".", 1)[0] + "..."
+                print(f"\nAnswer: {answer}\n")
+                
         except Exception as e:
-            print(f"\n[ERROR] Failed to get answer from chain: {e}\n")
+            print(f"\n[ERROR] Failed to get answer: {e}\n"
+                  "Try rephrasing your question or asking about a different topic.\n")
 
 
 if __name__ == "__main__":

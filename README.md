@@ -1,17 +1,48 @@
 # LangChain + Ollama PDF Q&A
 
-This is a basic local project that:
-- Lets you upload a PDF file
-- Reads and extracts its text
-- Creates embeddings using Ollama locally
-- Saves embeddings with FAISS
-- Lets you ask questions related to your PDF
-- Prints embeddings on terminal
+A fast and efficient PDF question-answering system using LangChain and Ollama.
 
-## 🚀 Setup Instructions
+## 🚀 Features
 
-1. Clone or create this project folder
-2. Create and activate a virtual environment:
+- Optimized PDF processing with smart chunking
+- Fast embedding creation with batched processing
+- Persistent FAISS index for quick reloads
+- Intelligent retrieval for accurate answers
+- Special handling of acronyms and definitions
+- Minimal dependencies for better performance
+
+## � Requirements
+
+- Python 3.9+
+- Ollama running locally (default: http://localhost:11434)
+- 4GB+ RAM recommended
+
+## 🛠️ Setup Instructions
+
+1. Create and activate a virtual environment:
    ```bash
    python -m venv venv
-   venv\Scripts\activate      # (Windows)
+   .\venv\Scripts\activate      # Windows
+   source venv/bin/activate     # Linux/Mac
+   ```
+
+2. Install requirements:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## 💡 Usage
+
+1. Run the application:
+   ```bash
+   python main.py
+   ```
+2. Enter the path to your PDF file
+3. Ask questions about the PDF content
+4. Type 'exit' to quit
+
+## 🔄 Performance Notes
+
+- First run will create and save embeddings
+- Subsequent runs with same PDF use cached embeddings
+- FAISS index automatically persists for faster reloading
