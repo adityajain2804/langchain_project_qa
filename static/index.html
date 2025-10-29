@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Q&A Chat</title>
+  <style>
+    body {
+      font-family: "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+
+    .chat-container {
+      width: 100%;
+      max-width: 700px;
+      height: 90vh;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .chat-header {
+      background: #007bff;
+      color: white;
+      padding: 16px;
+      text-align: center;
+      font-weight: bold;
+      font-size: 20px;
+    }
+
+    .chat-box {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .message {
+      max-width: 75%;
+      padding: 10px 14px;
+      border-radius: 16px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    .user-message {
+      background: #007bff;
+      color: white;
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+
+    .bot-message {
+      background: #f1f0f0;
+      color: #333;
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+
+    .chat-input {
+      display: flex;
+      border-top: 1px solid #ddd;
+    }
+
+    .chat-input textarea {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      resize: none;
+      font-size: 16px;
+      height: 60px;
+      outline: none;
+    }
+
+    .chat-input button {
+      background: #007bff;
+      color: white;
+      border: none;
+      padding: 0 20px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background 0.2s;
+    }
+
+    .chat-input button:hover {
+      background: #0056b3;
+    }
+
+    .typing {
+      font-size: 14px;
+      color: gray;
+      font-style: italic;
+      margin-left: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <div class="chat-header">📘 PDF Chat Assistant</div>
+    <div class="chat-box" id="chatBox">
+      <div class="bot-message message">Hey there 👋! Ask me anything from your PDF.</div>
+    </div>
+    <div class="chat-input">
+      <textarea id="userInput" placeholder="Type your question..."></textarea>
+      <button onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+
+  <script>
+    async function sendMessage() {
+      const input = document.getElementById("userInput");
+      const chatBox = document.getElementById("chatBox");
+      const question = input.value.trim();
+
+      if (!question) return;
+
+      // User message bubble
+      const userMsg = document.createElement("div");
+      userMsg.className = "message user-message";
+      userMsg.textContent = question;
+      chatBox.appendChild(userMsg);
+      input.value = "";
+
+      // Bot typing indicator
+      const typingMsg = document.createElement("div");
+      typingMsg.className = "message bot-message typing";
+      typingMsg.textContent = "Bot is thinking...";
+      chatBox.appendChild(typingMsg);
+      chatBox.scrollTop = chatBox.scrollHeight;
+
+      try {
+        const res = await fetch("http://127.0.0.1:8000/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question })
+        });
+
+        const data = await res.json();
+        typingMsg.remove();
+
+        const botMsg = document.createElement("div");
+        botMsg.className = "message bot-message";
+        botMsg.textContent = data.answer || "⚠️ No answer found.";
+        chatBox.appendChild(botMsg);
+      } catch (err) {
+        typingMsg.remove();
+        const errMsg = document.createElement("div");
+        errMsg.className = "message bot-message";
+        errMsg.textContent = "❌ Connection failed.";
+        chatBox.appendChild(errMsg);
+      }
+
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    // Send on Enter key
+    document.getElementById("userInput").addEventListener("keypress", function(e) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>
