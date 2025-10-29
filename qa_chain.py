@@ -1,4 +1,5 @@
 # qa_chain.py
+import random
 import os
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import PromptTemplate
@@ -35,17 +36,19 @@ def create_qa_chain(vector_store):
     print(f"[INFO] Creating QA chain with LLM: {LLM_MODEL_NAME}")
     llm = OllamaLLM(
         model=LLM_MODEL_NAME,
-        temperature=0.3,  # Slight randomness for more dynamic responses
+        temperature=random.uniform(0.7, 1.2),  # 🌀 Har run me thoda random creativity
+        top_p=random.uniform(0.8, 1.0),        # 🧠 Sampling randomness aur badha
+        repeat_penalty=1.1,                    # 🔁 Repeat kam kare
         base_url=OLLAMA_API_BASE_URL,
-        context_window=4096,  # Ensure enough context for answer generation
-        num_ctx=4096,  # Match context window
+        context_window=4096,
+        num_ctx=4096
     )
 
     # Optimize retrieval settings for better answer accuracy
     retriever = vector_store.as_retriever(
         search_type="similarity_score_threshold",  # Changed to threshold-based retrieval
         search_kwargs={
-            "k": 5,  # Increased for better context coverage
+            "k": 15,  # Increased for better context coverage
             "score_threshold": 0.2,  # Lowered threshold to catch more potential matches
             "fetch_k": 8,  # Fetch more candidates before filtering
         }

@@ -11,11 +11,8 @@ from pathlib import Path
 EMBED_MODEL_NAME = "mxbai-embed-large"
 
 
-
-
 def create_embeddings(docs, source_path: str = None):
     """Create embeddings for the given LangChain documents using Ollama.
-
 
     Returns:
     vector_store: FAISS vector store built from documents
@@ -23,21 +20,15 @@ def create_embeddings(docs, source_path: str = None):
     print(f"[INFO] Creating embeddings using Ollama model: {EMBED_MODEL_NAME} ...")
 
     base_url = os.getenv("OLLAMA_API_BASE_URL", "http://localhost:11434")
-    # Disable strict SSL verification for local HTTP Ollama endpoints to avoid
-    # unnecessary SSL context delays on local installs. If you use HTTPS with
-    # valid certs, remove verify=False.
+    # Disable strict SSL verification for local HTTP Ollama endpoints
     try:
         embeddings = OllamaEmbeddings(model=EMBED_MODEL_NAME, base_url=base_url, verify=False)
     except Exception:
-        # Some versions of the Ollama client may not accept `verify` or may raise
-        # a Pydantic ValidationError. Fall back to the default constructor.
         embeddings = OllamaEmbeddings(model=EMBED_MODEL_NAME, base_url=base_url)
 
-    # Persisted FAISS index location and metadata
     INDEX_DIR = Path("faiss_index")
     META_FILE = Path("faiss.db")
 
-    # Fast path: load existing index if metadata matches
     if META_FILE.exists() and INDEX_DIR.exists():
         try:
             meta = json.loads(META_FILE.read_text())
@@ -48,44 +39,36 @@ def create_embeddings(docs, source_path: str = None):
                     print("[INFO] FAISS index loaded from disk.")
                     return vector_store
                 except Exception:
-                    # fall through to rebuilding index
-                    print("[WARN] Could not load FAISS index from disk; rebuilding index.")
+                    print("[WARN] Could not load FAISS index; rebuilding index.")
             else:
-                print("[WARN] Embedding model changed since index was saved; rebuilding index.")
+                print("[WARN] Embedding model changed; rebuilding index.")
         except Exception as e:
-            print("[WARN] Could not load FAISS metadata, rebuilding index:", e)
+            print("[WARN] Could not load FAISS metadata:", e)
 
-    # Aggressive preprocessing to minimize chunks while preserving quality
     print("[INFO] Preprocessing documents: optimizing chunks for faster processing...")
     texts = []
     seen = set()
-    # Higher threshold for merging to reduce total chunks
-    MIN_CHARS = 800  # Increased minimum size for better chunking efficiency
-    
-    # Pre-compute hashes for faster deduplication
+    MIN_CHARS = 800
+
     from hashlib import blake2b
     def quick_hash(text):
         return blake2b(text.encode(), digest_size=8).hexdigest()
 
-    # Merge tiny consecutive chunks into larger ones to reduce total count
     buffer = ""
     for d in docs:
         txt = d.page_content.strip()
         if not txt:
             continue
-        # simple dedupe by exact text hash
         h = hash(txt)
         if h in seen:
             continue
         seen.add(h)
 
         if len(txt) < MIN_CHARS:
-            # accumulate into buffer
             if buffer:
                 buffer += "\n\n" + txt
             else:
                 buffer = txt
-            # if buffer is big enough, flush
             if len(buffer) >= MIN_CHARS:
                 texts.append(buffer)
                 buffer = ""
@@ -99,98 +82,72 @@ def create_embeddings(docs, source_path: str = None):
         texts.append(buffer)
 
     print(f"[INFO] {len(texts)} preprocessed text chunks will be embedded (original docs: {len(docs)})")
-
-    # Remove very small texts
     texts = [t for t in texts if len(t) >= 30]
 
-    # If there are an excessive number of chunks, reduce them by merging adjacent
-    # chunks until we reach a practical target. This keeps retrieval quality
-    # reasonable while drastically reducing embedding time on very large PDFs.
     def reduce_texts(texts_list, target_count):
         if len(texts_list) <= target_count:
             return texts_list
         merged = list(texts_list)
-        # repeatedly merge the shortest adjacent pairs until under target
-        import heapq
-
-        # compute lengths
         while len(merged) > target_count:
-            # merge adjacent pairs greedily: find smallest combined length
             best_i = 0
             best_len = len(merged[0]) + len(merged[1]) if len(merged) > 1 else len(merged[0])
             for i in range(len(merged) - 1):
-                l = len(merged[i]) + len(merged[i+1])
+                l = len(merged[i]) + len(merged[i + 1])
                 if l < best_len:
                     best_len = l
                     best_i = i
-            # merge best_i and best_i+1
-            merged[best_i] = merged[best_i] + "\n\n" + merged.pop(best_i+1)
-            # stop if too slow
+            merged[best_i] = merged[best_i] + "\n\n" + merged.pop(best_i + 1)
             if len(merged) % 100 == 0:
-                # lightweight progress hint
                 print(f"[INFO] Reduced to {len(merged)} chunks...")
         return merged
 
-    # Reduced maximum chunks for better performance while maintaining quality
-    MAX_CHUNKS = 800  # Reduced from 1200 for faster processing
+    MAX_CHUNKS = 800
     if len(texts) > MAX_CHUNKS:
-        print(f"[WARN] Too many chunks ({len(texts)}). Reducing to {MAX_CHUNKS} for faster processing...")
+        print(f"[WARN] Too many chunks ({len(texts)}). Reducing to {MAX_CHUNKS}...")
         texts = reduce_texts(texts, MAX_CHUNKS)
-        print(f"[INFO] Reduced chunk count: {len(texts)} for optimal performance")
+        print(f"[INFO] Reduced chunk count: {len(texts)}")
 
-    # Embed in batches with optimized settings
-    # Use larger batch size and request pipelining for faster embedding
-    batch_size = 512  # Increased batch size for fewer API calls
+    batch_size = 512
     vectors = []
     total = len(texts)
     try:
         print("[INFO] Starting embedding process with optimized batching...")
-        
-        # Configure embedding parameters for speed
-        embeddings.client_kwargs = {
-            "timeout": 60,  # Increased timeout for larger batches
-            "retry_on_timeout": True
-        }
-        
+        embeddings.client_kwargs = {"timeout": 60, "retry_on_timeout": True}
+
         for i in range(0, total, batch_size):
-            batch = texts[i:i+batch_size]
+            batch = texts[i:i + batch_size]
             v = embeddings.embed_documents(batch)
             vectors.extend(v)
-            print(f"[INFO] Embedded {min(i+batch_size, total)}/{total} chunks ({(min(i+batch_size, total)/total*100):.1f}%)")
+            print(f"[INFO] Embedded {min(i + batch_size, total)}/{total} chunks ({(min(i + batch_size, total) / total * 100):.1f}%)")
     except KeyboardInterrupt:
-        print("\n[WARN] Embedding interrupted by user. Building partial index from already-computed vectors...")
+        print("\n[WARN] Embedding interrupted by user.")
     except Exception as e:
         print("[ERROR] Embedding failed:", e)
         raise
 
-    # Build FAISS index from precomputed vectors without re-embedding
     print("[INFO] Building FAISS vector store from precomputed embeddings...")
 
-    # Create a tiny wrapper that hands back precomputed embeddings in order
     class PrecomputedEmbeddings:
         def __init__(self, vectors):
             self.vectors = vectors
             self._pos = 0
-            
+
         def embed_documents(self, texts_in):
             n = len(texts_in)
             out = self.vectors[self._pos:self._pos + n]
             self._pos += n
             return out
-            
+
         def embed_query(self, text):
-            # For query-time embedding, use the actual Ollama embedder
             return embeddings.embed_query(text)
-            
+
         def __call__(self, text):
-            # Support callable interface for single text embedding
             if isinstance(text, str):
                 return self.embed_query(text)
             return self.embed_documents(text)
 
     pre_emb = PrecomputedEmbeddings(vectors)
 
-    # Recreate Document objects aligned with the preprocessed texts so FAISS can attach metadata
     from langchain_core.documents import Document as LcDocument
     faiss_docs = []
     for i, t in enumerate(texts):
@@ -199,15 +156,10 @@ def create_embeddings(docs, source_path: str = None):
     vector_store = FAISS.from_documents(faiss_docs, pre_emb)
     print("[INFO] FAISS vector store created.")
 
-    # Save index and metadata for future runs
     try:
         INDEX_DIR.mkdir(exist_ok=True)
         vector_store.save_local(str(INDEX_DIR))
-        meta = {
-            "embed_model": EMBED_MODEL_NAME,
-            "index_dir": str(INDEX_DIR.resolve()),
-            "num_chunks": len(texts),
-        }
+        meta = {"embed_model": EMBED_MODEL_NAME, "index_dir": str(INDEX_DIR.resolve()), "num_chunks": len(texts)}
         if source_path:
             meta["source_path"] = str(source_path)
         META_FILE.write_text(json.dumps(meta))
@@ -216,3 +168,37 @@ def create_embeddings(docs, source_path: str = None):
         print("[WARN] Failed to save FAISS index or metadata:", e)
 
     return vector_store
+
+
+# 🟢 Add this new runtime batching function BELOW the existing create_embeddings()
+def create_vector_on_demand(docs, source_path=None, existing_store=None):
+    """Embed only needed chunks when required at runtime."""
+    from langchain_ollama import OllamaEmbeddings
+    from langchain_community.vectorstores import FAISS
+    from langchain_core.documents import Document
+    import random
+
+    embeddings = OllamaEmbeddings(
+        model=EMBED_MODEL_NAME,
+        base_url=os.getenv("OLLAMA_API_BASE_URL", "http://localhost:11434")
+    )
+
+    # Randomly sample a portion to embed if the document is huge
+    CHUNK_LIMIT = 500
+    to_embed = docs
+    if len(docs) > CHUNK_LIMIT:
+        print(f"[INFO] Large PDF detected ({len(docs)} chunks). Embedding only {CHUNK_LIMIT} most relevant chunks for now...")
+        to_embed = random.sample(docs, CHUNK_LIMIT)
+
+    texts = [d.page_content for d in to_embed]
+    vectors = embeddings.embed_documents(texts)
+    faiss_docs = [Document(page_content=t, metadata={"source": source_path or ""}) for t in texts]
+
+    if existing_store:
+        existing_store.add_documents(faiss_docs)
+        print(f"[INFO] Added {len(faiss_docs)} new embeddings to existing FAISS store.")
+        return existing_store
+    else:
+        store = FAISS.from_documents(faiss_docs, embeddings)
+        print(f"[INFO] Created FAISS store on-demand with {len(faiss_docs)} chunks.")
+        return store

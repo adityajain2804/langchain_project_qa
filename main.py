@@ -2,79 +2,111 @@
 import warnings
 import os
 import subprocess
+import random
+import json
+from pathlib import Path
+from embedding_creator import create_embeddings, create_vector_on_demand
 
-# Suppress a known LangChain/Pydantic compatibility user warning on Python 3.14+
-# This is safe to suppress locally; consider updating langchain_core or Python version later.
 warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.*")
-# Suppress the transformers/langchain framework advisory which prints when PyTorch/TF/Flax are missing.
 warnings.filterwarnings("ignore", message="None of PyTorch, TensorFlow >= 2.0, or Flax have been found.*")
 
 from contextlib import redirect_stdout, redirect_stderr
-
-# Some imported libraries print advisory/info messages during import (for example
-# transformers/langchain may print framework availability). Silence stdout/stderr
-# temporarily during imports so the terminal stays clean.
 with open(os.devnull, 'w') as _devnull:
     with redirect_stdout(_devnull), redirect_stderr(_devnull):
         from pdf_loader import load_pdf
-        from embedding_creator import create_embeddings
         from qa_chain import create_qa_chain, LLM_MODEL_NAME, OLLAMA_API_BASE_URL
 
 
+def get_random_response(user_input):
+    greetings = ["hello", "hi", "hey", "hola", "yo", "good morning", "good evening"]
+    smalltalk = ["how are you", "what's up", "who are you", "tell me about yourself"]
+
+    user_input_lower = user_input.lower()
+
+    if any(word in user_input_lower for word in greetings):
+        return random.choice([
+            "Hey there! 👋 How’s it going?",
+            "Hi! Ready to explore your PDF?",
+            "Hello again! What shall we look at today?",
+            "Hey! 😊 Let’s dive into your document.",
+        ])
+    elif any(phrase in user_input_lower for phrase in smalltalk):
+        return random.choice([
+            "I'm just a bunch of Python code — but feeling awesome today 😄",
+            "All systems online and ready!",
+            "I’m good! Let’s find some answers in your PDF?",
+        ])
+    return None
+
+
 def main():
-    # Cache frequently used functions
     path_exists = os.path.exists
     path_expanduser = os.path.expanduser
-    
-    # If we have a saved FAISS metadata file, use the stored PDF path and load the index
-    meta_file = "faiss.db"
-    pdf_path = None
-    
-    if path_exists(meta_file):
-        try:
-            import json  # Import here for faster startup when not needed
-            with open(meta_file, "r") as f:
-                meta = json.loads(f.read())
-            stored = meta.get("source_path")
-            if stored and path_exists(stored):
-                pdf_path = stored
-                print(f"[INFO] Using cached PDF: {pdf_path}")
-        except Exception as e:
-            print(f"[WARN] Could not load cached PDF path: {e}")
 
-    while not pdf_path or not path_exists(path_expanduser(pdf_path)):
-        pdf_path = input("Enter path of your PDF file: ").strip('" \'')
+    pdf_path = r"D:\Aditya_projects\langchain_pdf_qa\AI-NOTES-UNIT-1.pdf"
+
+    if not path_exists(path_expanduser(pdf_path)):
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    else:
+        print(f"[INFO] Using PDF file: {pdf_path}")
 
     docs = load_pdf(pdf_path)
+    vector_store = None
+    qa_chain = None
 
-    # Pass source_path so embedding_creator will save it in metadata when building index
-    vector_store = create_embeddings(docs, source_path=pdf_path)
+    # ✅ Add smart FAISS cache check
+    INDEX_DIR = Path("faiss_index")
+    META_FILE = Path("faiss.db")
+
+    if META_FILE.exists() and INDEX_DIR.exists():
+        try:
+            meta = json.loads(META_FILE.read_text())
+            if (
+                meta.get("embed_model") == "mxbai-embed-large"
+                and meta.get("source_path") == str(pdf_path)
+            ):
+                print("[INFO] Found existing FAISS index. Loading from disk...")
+                from langchain_ollama import OllamaEmbeddings
+                from langchain_community.vectorstores import FAISS
+
+                embeddings = OllamaEmbeddings(
+                    model="mxbai-embed-large",
+                    base_url="http://localhost:11434"
+                )
+                vector_store = FAISS.load_local(str(INDEX_DIR), embeddings, allow_dangerous_deserialization=True)
+
+            else:
+                print("[INFO] FAISS index mismatch or missing — creating new embeddings...")
+                vector_store = create_vector_on_demand(docs, source_path=pdf_path)
+        except Exception as e:
+            print(f"[WARN] Could not load existing FAISS index: {e}")
+            vector_store = create_vector_on_demand(docs, source_path=pdf_path)
+    else:
+        print("[INFO] No existing FAISS index found — creating embeddings...")
+        vector_store = create_vector_on_demand(docs, source_path=pdf_path)
+
+    # ✅ Create QA chain only once
     qa_chain, _, _ = create_qa_chain(vector_store)
 
-    # Print and verify Ollama HTTP API base URL and that the model is available locally.
+    # Optional: Verify Ollama setup
     print(f"[INFO] Using Ollama HTTP API base URL: {OLLAMA_API_BASE_URL}")
-    # Check HTTP reachability (best-effort). Use requests if available.
     try:
         import requests
         r = requests.get(OLLAMA_API_BASE_URL, timeout=3)
-        print(f"[INFO] Ollama HTTP endpoint reachable (status {r.status_code})")
+        print(f"[INFO] Ollama endpoint reachable (status {r.status_code})")
     except Exception as e:
-        print(f"[WARN] Could not reach Ollama HTTP endpoint at {OLLAMA_API_BASE_URL}: {e}")
+        print(f"[WARN] Could not reach Ollama API: {e}")
 
-    # Check that the model is present in `ollama list` (best-effort). If `ollama` CLI isn't available
-    # this will warn but not stop execution.
     try:
         res = subprocess.run(["ollama", "list"], capture_output=True, text=True, check=False)
         out = (res.stdout or "") + (res.stderr or "")
         if LLM_MODEL_NAME in out:
             print(f"[INFO] Ollama model '{LLM_MODEL_NAME}' found locally.")
         else:
-            print(f"[WARN] Ollama model '{LLM_MODEL_NAME}' not found in `ollama list` output. Run `ollama pull {LLM_MODEL_NAME}` if needed.")
+            print(f"[WARN] Ollama model '{LLM_MODEL_NAME}' not found. Run: ollama pull {LLM_MODEL_NAME}")
     except Exception as e:
-        print(f"[WARN] Could not run `ollama list` to verify models: {e}")
-    
-    print("\n[READY] Ask questions about the PDF content (type 'exit' to quit, 'help' for tips):")
-    
+        print(f"[WARN] Could not verify Ollama model: {e}")
+
     help_text = """
 Tips for better answers:
 - Be specific in your questions
@@ -83,44 +115,48 @@ Tips for better answers:
 - For processes, ask 'how to' or 'steps for'
 - Type 'exit' to quit
 """
-    
+
+    print("\n[READY] Ask questions about the PDF content (type 'exit' to quit, 'help' for tips):")
+
     while True:
         query = input("\nQuestion: ").strip()
+        if not query:
+            continue
+
+        rand_reply = get_random_response(query)
+        if rand_reply:
+            print(f"\nAnswer: {rand_reply}\n")
+            continue
+
         query_lower = query.lower()
-        
         if query_lower == "exit":
             print("\nThank you for using the PDF QA system!")
             break
         if query_lower == "help":
             print(help_text)
             continue
-        if not query:
-            continue
-            
+
+        # 🧠 Run QA chain with timeout
         try:
-            # Use the LCEL chain to get answer with timeout protection
             from concurrent.futures import ThreadPoolExecutor, TimeoutError
             with ThreadPoolExecutor() as executor:
                 future = executor.submit(qa_chain.invoke, query)
                 try:
-                    answer = future.result(timeout=30)  # 30 second timeout
+                    answer = future.result(timeout=30)
                 except TimeoutError:
-                    print("\n[ERROR] Question took too long to answer. Try asking a more specific question.\n")
+                    print("\n[ERROR] Question took too long to answer. Try a more specific question.\n")
                     continue
-            
-            # Clean up and format the answer
+
             answer = answer.strip()
             if not answer or answer.lower() == query_lower:
-                print("\nAnswer: I don't know or couldn't find relevant information in the PDF.\n")
+                print("\nAnswer: I couldn't find relevant information in the PDF.\n")
             else:
-                # Truncate very long answers while preserving complete sentences
                 if len(answer) > 1500:
                     answer = answer[:1500].rsplit(".", 1)[0] + "..."
                 print(f"\nAnswer: {answer}\n")
-                
+
         except Exception as e:
-            print(f"\n[ERROR] Failed to get answer: {e}\n"
-                  "Try rephrasing your question or asking about a different topic.\n")
+            print(f"\n[ERROR] Failed to get answer: {e}\nTry rephrasing your question.\n")
 
 
 if __name__ == "__main__":
