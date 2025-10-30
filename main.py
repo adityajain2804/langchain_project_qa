@@ -13,7 +13,7 @@ warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't 
 warnings.filterwarnings("ignore", message="None of PyTorch, TensorFlow >= 2.0, or Flax have been found.*")
 
 # ✅ Global setup (only runs once)
-PDF_PATH = r"D:\Aditya_projects\langchain_pdf_qa\AI-NOTES-UNIT-1.pdf"
+PDF_PATH = r"D:\Aditya_projects\langchain_pdf_qa\data\AI-NOTES-UNIT-1.pdf"
 INDEX_DIR = Path("faiss_index")
 META_FILE = Path("faiss.db")
 
